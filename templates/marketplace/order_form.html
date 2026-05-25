@@ -1,0 +1,5 @@
+{% extends "marketplace/base.html" %}
+{% block title %}Заявка на {{ product.name }} — Qurilish Market{% endblock %}
+{% block content %}
+<section class="container py-5"><div class="row g-4 justify-content-center"><div class="col-lg-5"><div class="summary-panel p-4"><p class="text-secondary mb-1">Заявка по товару</p><h1 class="h3">{{ product.name }}</h1><div class="price mb-3">{{ product.price|floatformat:0 }} сум / {{ product.unit }}</div><p class="mb-1"><strong>Город:</strong> {{ product.city }}</p><p class="mb-0"><strong>Продавец:</strong> {{ product.seller.name }}</p></div></div><div class="col-lg-6"><form class="order-form p-4" method="post">{% csrf_token %}{% for field in form %}<div class="mb-3"><label class="form-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.errors %}<div class="text-danger small mt-1">{{ field.errors|striptags }}</div>{% endif %}</div>{% endfor %}<button class="btn btn-success btn-lg w-100" type="submit">Отправить заявку</button></form></div></div></section>
+{% endblock %}
