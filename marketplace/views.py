@@ -1,8 +1,13 @@
+import re
+
 from django.contrib import messages
 from django.db.models import Count, Q
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_POST
+
 from .forms import OrderForm
-from .models import Category, Product
+from .models import Category, Order, Product
 from .telegram import send_order_notification
 
 
@@ -61,3 +66,58 @@ def order_create(request, product_id):
     else:
         form = OrderForm(initial={"city": product.city, "quantity": 1})
     return render(request, "marketplace/order_form.html", {"product": product, "form": form})
+
+
+def _extract_phone(text):
+    match = re.search(r"(\+?\d[\d\s().-]{7,}\d)", text)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_quantity(text):
+    match = re.search(r"(?:количество|нужно|надо|возьму|закажу|need)\D{0,12}(\d{1,5})", text, re.IGNORECASE)
+    return int(match.group(1)) if match else 1
+
+
+def _extract_name(text):
+    match = re.search(r"(?:меня зовут|имя)\s+([А-Яа-яA-Za-z' -]{2,40})", text, re.IGNORECASE)
+    return match.group(1).strip() if match else "Клиент из чата"
+
+
+def _product_payload(product):
+    return {"id": product.id, "name": product.name, "price": f"{product.price:,.0f}".replace(",", " "), "unit": product.unit, "city": product.city, "url": product.get_absolute_url()}
+
+
+@require_POST
+def assistant_chat(request):
+    message = request.POST.get("message", "").strip()
+    selected_product_id = request.POST.get("product_id", "").strip()
+
+    if selected_product_id:
+        product = get_object_or_404(Product, pk=selected_product_id, is_active=True)
+        request.session["chat_product_id"] = product.id
+        return JsonResponse({"reply": f"Выбран товар: {product.name}. Напишите телефон и количество, например: +998 90 123 45 67, нужно 5 мешков.", "products": [_product_payload(product)]})
+
+    if not message:
+        return JsonResponse({"reply": "Напишите, какой материал нужен: цемент, кирпич, арматура или другой товар."})
+
+    phone = _extract_phone(message)
+    product_id = request.session.get("chat_product_id")
+    if phone and product_id:
+        product = get_object_or_404(Product, pk=product_id, is_active=True)
+        order = Order.objects.create(customer_name=_extract_name(message), phone=phone, city=product.city, product=product, quantity=_extract_quantity(message), comment=f"Заявка из чат-виджета: {message}")
+        send_order_notification(order)
+        request.session.pop("chat_product_id", None)
+        return JsonResponse({"reply": f"Заявка #{order.id} создана: {product.name}, количество {order.quantity} {product.unit}. Менеджер свяжется с вами."})
+
+    aliases = {"cement": "цемент", "kirpich": "кирпич", "brick": "кирпич", "armatura": "арматура", "rebar": "арматура", "kley": "клей"}
+    search_text = aliases.get(message.lower(), message)
+    raw_tokens = [token for token in re.split(r"\W+", search_text.lower()) if len(token) > 1]
+    tokens = raw_tokens + [aliases[token] for token in raw_tokens if token in aliases]
+    query = Q(name__icontains=search_text) | Q(description__icontains=search_text) | Q(category__name__icontains=search_text)
+    for token in tokens:
+        query |= Q(name__icontains=token) | Q(description__icontains=token) | Q(category__name__icontains=token)
+
+    products = Product.objects.filter(is_active=True).select_related("category", "seller").filter(query)[:5]
+    if not products:
+        return JsonResponse({"reply": "Пока не нашёл точный товар. Попробуйте написать название проще: цемент, кирпич, арматура, клей."})
+    return JsonResponse({"reply": "Нашёл подходящие товары. Выберите один, и я помогу оформить заявку.", "products": [_product_payload(product) for product in products]})
